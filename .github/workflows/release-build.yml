@@ -1,0 +1,202 @@
+name: release-build
+
+# Full multi-arch build for the long-lived branches:
+#   develop -> build every arch (ipk + apk), upload artifacts (latest, no Release)
+#   main    -> build every arch AND publish a GitHub Release (stable)
+# Pushing a tag like v1.2.3 also publishes a Release.
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+    tags:
+      - v[0-9]+*
+
+env:
+  REPO_NAME: zapret_openwrt
+  REPO_LNK: Forthey/zapret_openwrt
+  PKGDIR: ${{ github.workspace }}/zapret_openwrt
+  SDKDIR: /builder
+  LUCI_ARCH: aarch64_cortex-a53
+
+jobs:
+  # Generate the full build matrix and decide whether to publish a Release.
+  var:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+      do_release: ${{ steps.set.outputs.do_release }}
+    steps:
+      - id: set
+        run: |
+          IPK=v24.10.5
+          APK=v25.12.0
+          ARCHS="aarch64_cortex-a53 aarch64_cortex-a72 aarch64_cortex-a76 aarch64_generic \
+                 arm_arm1176jzf-s_vfp arm_arm926ej-s arm_cortex-a15_neon-vfpv4 arm_cortex-a5_vfpv4 \
+                 arm_cortex-a7 arm_cortex-a7_neon-vfpv4 arm_cortex-a7_vfpv4 arm_cortex-a8_vfpv3 \
+                 arm_cortex-a9 arm_cortex-a9_neon arm_cortex-a9_vfpv3-d16 arm_fa526 arm_xscale \
+                 mips64_octeonplus mips_24kc mips_4kec mips_mips32 \
+                 mipsel_24kc mipsel_24kc_24kf mipsel_74kc mipsel_mips32 \
+                 riscv64_generic x86_64"
+          items=""
+          add() { items="$items{\"branch\":\"$1\",\"arch\":\"$2\",\"pkgtype\":\"$3\"},"; }
+          for a in $ARCHS; do
+            # ipk: all arches except riscv64_generic (no IPK SDK)
+            [ "$a" != "riscv64_generic" ] && add "$IPK" "$a" ipk
+            # apk: all arches except these two (no APK SDK)
+            case "$a" in
+              arm_cortex-a9_vfpv3-d16|mips_4kec) ;;
+              *) add "$APK" "$a" apk;;
+            esac
+          done
+          echo "matrix={\"include\":[${items%,}]}" >> "$GITHUB_OUTPUT"
+          # Publish a Release for main pushes and version tags, but not for develop.
+          if [ "$GITHUB_REF" = "refs/heads/main" ] || [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            echo "do_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "do_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: [ var ]
+    name: "${{ matrix.pkgtype }}: ${{ matrix.arch }}"
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.var.outputs.matrix) }}
+    container:
+      image: ghcr.io/openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
+      options: --user root
+
+    outputs:
+      pkgver: ${{ steps.prepare.outputs.pkgver }}
+
+    steps:
+      - name: Checkout this fork
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.REPO_NAME }}
+
+      - name: Fix SDK paths
+        run: |
+          mkdir -p $SDKDIR/shared-workdir
+          rm -rf $SDKDIR/shared-workdir/build
+          ln -sf $SDKDIR $SDKDIR/shared-workdir/build
+
+      - name: Initialization environment
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          echo "PKGTYPE=${{ matrix.pkgtype }}" >> $GITHUB_ENV
+          echo "ARCH_TAG=${{ matrix.arch }}" >> $GITHUB_ENV
+
+      - name: Prepare packages
+        id: prepare
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          MKFN=$( ls -1 $PKGDIR/luci-app-zapret*/Makefile )
+          PKGVER=$( grep -s '^PKG_VERSION:=.*' $MKFN | cut -d'=' -f2 )
+          PKGREL=$( grep -s '^PKG_RELEASE:=.*' $MKFN | cut -d'=' -f2 )
+          [ "$PKGREL" != "1" ] && PKGVER=$PKGVER-r$PKGREL
+          echo "PKG_VERSION = $PKGVER"
+          cp -vr $PKGDIR ./package/$REPO_NAME/
+          echo "pkgver=$PKGVER" >> $GITHUB_OUTPUT
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Init feeds
+        id: init
+        if: steps.prepare.outputs.status == 'success'
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          mv feeds.conf.default feeds.conf
+          sed -i -e 's|base.*\.git|base https://github.com/openwrt/openwrt.git|' feeds.conf
+          sed -i -e 's|packages.*\.git|packages https://github.com/openwrt/packages.git|' feeds.conf
+          sed -i -e 's|luci.*\.git|luci https://github.com/openwrt/luci.git|' feeds.conf
+          ./scripts/feeds update base packages luci
+          ./scripts/feeds install -a
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Init config
+        id: config
+        if: steps.init.outputs.status == 'success'
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          make defconfig
+          sed -i 's/CONFIG_LUCI_JSMIN=y/CONFIG_LUCI_JSMIN=n/g' .config
+          sed -i 's/CONFIG_LUCI_CSSTIDY=y/CONFIG_LUCI_CSSTIDY=n/g' .config
+          grep -q '^CONFIG_LUCI_CSSTIDY=' .config || echo 'CONFIG_LUCI_CSSTIDY=n' >> .config
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Build packages
+        id: build
+        if: steps.config.outputs.status == 'success'
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          PKGLIST="package/$REPO_NAME/zapret/compile"
+          if [ "${{ matrix.arch }}" = "$LUCI_ARCH" ]; then
+              PKGLIST="$PKGLIST package/$REPO_NAME/luci-app-zapret/compile"
+          fi
+          make $PKGLIST -j$(nproc)
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Collect packages
+        id: install
+        if: steps.build.outputs.status == 'success'
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          find ./bin/packages/*/base -type f ! -regex ".*\(zapret\).*\.[ai]pk$" -delete
+          OUTDIR=$GITHUB_WORKSPACE/$PKGTYPE-${{ matrix.arch }}
+          mkdir -p $OUTDIR
+          cp -R ./bin/packages/*/base/. $OUTDIR/
+          echo "OUTDIR=$OUTDIR" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Upload packages
+        if: steps.install.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          path: ${{ env.OUTDIR }}
+          name: zapret,${{ matrix.pkgtype }},${{ matrix.arch }}
+          if-no-files-found: error
+
+  # Publish a GitHub Release only for main / version tags.
+  release:
+    needs: [ var, build ]
+    if: needs.var.outputs.do_release == 'true'
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zapret,*
+
+      - name: Put packages into zip
+        env:
+          PKGVER: ${{ needs.build.outputs.pkgver }}
+        run: |
+          mkdir -p sorted
+          find . -maxdepth 1 -type d -name "zapret,ipk,*" -exec sh -c 'mkdir -p sorted/$(basename "{}" | cut -d, -f3)' \;
+          find . -maxdepth 1 -type d -name "zapret,apk,*" -exec sh -c 'mkdir -p sorted/$(basename "{}" | cut -d, -f3)/apk' \;
+          find . -maxdepth 1 -type d -name "zapret,ipk,*" -exec sh -c 'cp -R "{}/." sorted/$(basename "{}" | cut -d, -f3)' \;
+          find . -maxdepth 1 -type d -name "zapret,apk,*" -exec sh -c 'cp -R "{}/." sorted/$(basename "{}" | cut -d, -f3)/apk' \;
+          LUCI_IPK=$( find . -type f -path "*/zapret,ipk,*/luci-app-zapret*.ipk" -print | head -n 1 )
+          LUCI_APK=$( find . -type f -path "*/zapret,apk,*/luci-app-zapret*.apk" -print | head -n 1 )
+          [ -n "$LUCI_IPK" ] && find ./sorted -mindepth 1 -maxdepth 1 -type d -exec cp -f "$LUCI_IPK" "{}/" \;
+          [ -n "$LUCI_APK" ] && find ./sorted -mindepth 2 -maxdepth 2 -type d -name "apk" -exec cp -f "$LUCI_APK" "{}/" \;
+          mkdir -p public
+          find ./sorted -mindepth 1 -maxdepth 1 -type d -exec sh -c '7z a ./public/zapret_v${PKGVER}_$(basename "{}" | cut -d, -f3).zip {}/*' \;
+          ls -lh ./public/*.zip
+
+      - name: Upload assets
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          prerelease: true
+          tag_name: v${{ needs.build.outputs.pkgver }}
+          name: zapret v${{ needs.build.outputs.pkgver }}
+          body: |
+            zapret v${{ needs.build.outputs.pkgver }} for OpenWrt
+          files: ./public/*.zip

@@ -2,7 +2,7 @@ name: Update releases.json
 
 on:
   workflow_run:
-    workflows: ["build"]
+    workflows: ["release-build"]
     types: [completed]
   release:
     types: [published, unpublished, created, edited, deleted, prereleased]
