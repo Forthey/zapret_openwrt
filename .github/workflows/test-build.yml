@@ -1,0 +1,103 @@
+name: test-build
+
+# Fast functional build for pull requests: only the router's target
+# (ipk + aarch64_cortex-a53). Uploads an artifact, never creates a Release.
+# Use it to check that a PR branch still compiles and works on the router.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REPO_NAME: zapret_openwrt
+  REPO_LNK: Forthey/zapret_openwrt
+  PKGDIR: ${{ github.workspace }}/zapret_openwrt
+  SDKDIR: /builder
+  LUCI_ARCH: aarch64_cortex-a53
+  ARCH: aarch64_cortex-a53
+  BRANCH: v24.10.5
+  PKGTYPE: ipk
+
+jobs:
+  build:
+    name: "ipk: aarch64_cortex-a53"
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/openwrt/sdk:aarch64_cortex-a53-v24.10.5
+      options: --user root
+    steps:
+      - name: Checkout this fork
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.REPO_NAME }}
+
+      - name: Fix SDK paths
+        run: |
+          mkdir -p $SDKDIR/shared-workdir
+          rm -rf $SDKDIR/shared-workdir/build
+          ln -sf $SDKDIR $SDKDIR/shared-workdir/build
+
+      - name: Prepare packages
+        id: prepare
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          MKFN=$( ls -1 $PKGDIR/luci-app-zapret*/Makefile )
+          PKGVER=$( grep -s '^PKG_VERSION:=.*' $MKFN | cut -d'=' -f2 )
+          PKGREL=$( grep -s '^PKG_RELEASE:=.*' $MKFN | cut -d'=' -f2 )
+          [ "$PKGREL" != "1" ] && PKGVER=$PKGVER-r$PKGREL
+          echo "PKG_VERSION = $PKGVER"
+          cp -vr $PKGDIR ./package/$REPO_NAME/
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Init feeds
+        id: init
+        if: steps.prepare.outputs.status == 'success'
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          mv feeds.conf.default feeds.conf
+          sed -i -e 's|base.*\.git|base https://github.com/openwrt/openwrt.git|' feeds.conf
+          sed -i -e 's|packages.*\.git|packages https://github.com/openwrt/packages.git|' feeds.conf
+          sed -i -e 's|luci.*\.git|luci https://github.com/openwrt/luci.git|' feeds.conf
+          ./scripts/feeds update base packages luci
+          ./scripts/feeds install -a
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Init config
+        id: config
+        if: steps.init.outputs.status == 'success'
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          make defconfig
+          sed -i 's/CONFIG_LUCI_JSMIN=y/CONFIG_LUCI_JSMIN=n/g' .config
+          sed -i 's/CONFIG_LUCI_CSSTIDY=y/CONFIG_LUCI_CSSTIDY=n/g' .config
+          grep -q '^CONFIG_LUCI_CSSTIDY=' .config || echo 'CONFIG_LUCI_CSSTIDY=n' >> .config
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Build packages
+        id: build
+        if: steps.config.outputs.status == 'success'
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          PKGLIST="package/$REPO_NAME/zapret/compile package/$REPO_NAME/luci-app-zapret/compile"
+          make $PKGLIST -j$(nproc)
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Collect packages
+        id: install
+        if: steps.build.outputs.status == 'success'
+        working-directory: ${{ env.SDKDIR }}
+        run: |
+          find ./bin/packages/*/base -type f ! -regex ".*\(zapret\).*\.[ai]pk$" -delete
+          OUTDIR=$GITHUB_WORKSPACE/$PKGTYPE-$ARCH
+          mkdir -p $OUTDIR
+          cp -R ./bin/packages/*/base/. $OUTDIR/
+          echo "OUTDIR=$OUTDIR" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Upload packages
+        if: steps.install.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          path: ${{ env.OUTDIR }}
+          name: zapret,${{ env.PKGTYPE }},${{ env.ARCH }}
+          if-no-files-found: error
