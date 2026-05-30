@@ -1,0 +1,18 @@
+# Normalize line endings. Shell scripts and config files run on OpenWrt and
+# MUST stay LF, otherwise they break on the router.
+* text=auto eol=lf
+
+*.sh        text eol=lf
+*.js        text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.txt       text eol=lf
+*.md        text eol=lf
+*.patch     text eol=lf
+*.css       text eol=lf
+Makefile    text eol=lf
+config.default text eol=lf
+
+# Binary fake payloads — never touch.
+*.bin       binary
