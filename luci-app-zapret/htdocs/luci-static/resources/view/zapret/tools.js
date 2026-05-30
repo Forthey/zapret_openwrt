@@ -129,19 +129,6 @@ return baseclass.extend({
         });
     },
 
-    getStratList: function() {
-        let exec_cmd = '/bin/busybox';
-        let exec_arg = [ 'awk', '-F', '"', '/if \\[ "\\$strat" = "/ {print $4}', this.defCfgPath ];
-        return fs.exec(exec_cmd, exec_arg).then(res => {
-            if (res.code == 0) {
-                return this.getWordsArray(res.stdout);
-            }
-            return [ ];
-        }).catch(e => {
-            ui.addNotification(null, E('p', _('Failed to get strat list: %s').format(e)));
-        });
-    },
-
     handleServiceAction: function(name, action, throwed = false)
     {
         console.log('handleServiceAction: '+name+' '+action);
