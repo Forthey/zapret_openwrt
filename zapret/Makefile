@@ -107,6 +107,7 @@ define Package/$(PKG_NAME)/install
 	$(CP) $(PKG_BUILD_DIR)/ipset/* $(1)$(ZAPRET_DIR)/ipset/
 	$(INSTALL_BIN)  $(PKG_BUILD_DIR)/blockcheck.sh  $(1)$(ZAPRET_DIR)/blockcheck.sh
 	$(INSTALL_DIR) $(1)$(ZAPRET_DIR)/tmp
+	$(INSTALL_DIR) $(1)$(ZAPRET_DIR)/presets
 	$(INSTALL_DIR) $(1)$(ZAPRET_DIR)/init.d/openwrt
 	$(CP) $(PKG_BUILD_DIR)/init.d/openwrt/* $(1)$(ZAPRET_DIR)/init.d/openwrt/
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
