@@ -54,7 +54,6 @@ return view.extend({
             svc_info   : tools.getSvcInfo(),
             proc_list  : fs.exec('/bin/busybox', [ 'ps' ]),
             pkg_dict   : tools.getPackageDict(),
-            strat_list : tools.getStratList(),
             sys_info   : fs.exec('/bin/cat', [ '/etc/openwrt_release' ]),
             uci_data   : uci.load(tools.appName),
         }).catch(e => {
@@ -77,7 +76,6 @@ return view.extend({
             return;
         }
         let svc_boot = data.svc_boot ? true : false;
-        this.nfqws_strat_list = data.strat_list;
         this.pkg_arch = tools.getConfigPar(data.sys_info.stdout, 'DISTRIB_ARCH', 'unknown');
         //console.log('svc_en: ' + data.svc_en.code + '  poll.running = ' + this.POLL.running);
         let svc_en = (data.svc_en.code == 0) ? true : false;
@@ -217,18 +215,6 @@ return view.extend({
             ' ', _('Enable use  custom.d scripts')
         ]);
 
-        let strat_list = [ ];
-        strat_list.push( E('option', { value: 'strat__skip__' }, [ 'not change' ] ) );
-        for (let id = 0; id < this.nfqws_strat_list.length; id++) {
-            let strat = '' + this.nfqws_strat_list[id];
-            strat_list.push( E('option', { value: 'strat_' + id }, [ strat ] ) );
-        }
-        let label_nfqws = (tools.appName == 'zapret2') ? _('NFQWS2_OPT strategy: ') : _('NFQWS_OPT strategy: ');
-        let nfqws_strat = E('label', [
-            label_nfqws,
-            E('select', { id: 'cfg_nfqws_strat' }, strat_list)
-        ]);
-
         let cancel_button = E('button', {
             'class': btn_style_neutral,
             'click': ui.hideModal,
@@ -257,13 +243,8 @@ return view.extend({
             if (document.getElementById('cfg_enable_custom_d').checked) {
                 opt_flags += '(enable_custom_d)';
             };
-            let sel_strat = document.getElementById('cfg_nfqws_strat');
-            let opt_strat = sel_strat.options[sel_strat.selectedIndex].text;
-            if (opt_strat == 'not change') {
-                opt_strat = '-';
-            }
             opt_flags += '(sync)';
-            return [ opt_flags, opt_strat ];
+            return [ opt_flags, '-' ];
         };
         resetcfg_btn.onclick = this.createServiceHandlerFn('reset', 'resetcfg_btn');
 
@@ -278,8 +259,6 @@ return view.extend({
                 erase_autohostlist,
                 E('br'), E('br'),
                 enable_custom_d,
-                E('br'), E('br'),
-                nfqws_strat,
                 E('br'), E('br')
             ]),
             E('div', { 'style': 'display:flex; justify-content:space-between; align-items:center; margin-top:1px;' }, [
@@ -416,7 +395,7 @@ return view.extend({
         }
         
         let url1 = 'https://github.com/bol-van/'+tools.appName;
-        let url2 = 'https://github.com/remittor/zapret-openwrt';
+        let url2 = 'https://github.com/Forthey/zapret_openwrt';
 
         return E([
             E('h2', { 'class': 'fade-in' }, page_title),
